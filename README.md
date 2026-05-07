@@ -2,7 +2,7 @@
 
 ## 📋 Project Overview
 
-This is a **Retail ETL (Extract, Transform, Load) Pipeline** built on Databricks using **Delta Lake** architecture. The project follows the **Medallion Architecture** (Bronze → Silver → Gold) to process retail transaction data from S3 storage.
+This is a **Retail ETL (Extract, Transform, Load) Pipeline** built on Databricks using **Delta Lake** and the Medallion Architecture (Bronze → Silver → Gold) to process retail transaction data from Amazon S3. The pipeline is fully orchestrated for incremental loads and historical change tracking via SCD2 for dimensional modeling.
 
 ## 🎯 Business Purpose
 
@@ -19,10 +19,10 @@ Retail_ETL_Project/
 ├── 01_archival          # Archive old files from raw to archive folder
 ├── 02_bronze_load       # Load raw CSV files into Bronze layer
 ├── 03_silver_transform  # Clean and transform data into Silver layer
-├── 04_gold_load         # Create dimensional model in Gold layer
-├── 05_scd2_merge        # Implement SCD Type 2 for customer dimension
+├── 04_gold_load         # Create dimensional model in Gold layer (one-time)
+├── 05_scd2_merge        # Incremental SCD2 updates for all dimensions
 ├── 06_validation        # Data quality validation checks
-└── 07_logging           # Process logging and monitoring
+├── 07_logging           # Process logging and monitoring
 ```
 
 ## 🏗️ Architecture
@@ -30,9 +30,10 @@ Retail_ETL_Project/
 ### Data Layers
 
 #### **Bronze Layer** (`capgeminipro.retail_bronze`)
-- **Raw data ingestion** from S3
+- Raw data ingestion from S3
 - Minimal transformations
 - Data stored as-is from source
+- Delta format for performance
 
 **Tables:**
 - `bronze_customers`
@@ -41,93 +42,73 @@ Retail_ETL_Project/
 - `bronze_sales`
 
 #### **Silver Layer** (`capgeminipro.retail_silver`)
-- **Data cleaning and standardization**
-- Remove duplicates
-- Handle null values
-- Data type conversions
+- Data cleaning and standardization
+- Deduplication, null handling, cleansing
 - Data quality checks
+- Type validation
 
 **Tables:**
 - `silver_customers` - Cleaned customer data
 - `silver_products_clean` - Valid products (price > 0)
-- `silver_stores_clean` - Valid stores (with regions)
+- `silver_stores_clean` - Valid stores (non-null region)
 - `silver_sales_final` - Valid sales transactions
 
-**Rejected Data Tables:**
-- `rejected_products` - Products with price = 0
-- `rejected_stores` - Stores with NULL regions
-- `rejected_sales` - Sales with quantity <= 0
+**Rejected Data:**
+- `rejected_products` - price = 0
+- `rejected_stores` - NULL region
+- `rejected_sales` - quantity <= 0
 
 #### **Gold Layer** (`capgeminipro.retail_gold`)
-- **Business-ready dimensional model**
-- Implements Slowly Changing Dimensions (SCD Type 2)
-- Optimized for analytics and reporting
+- Business-ready dimensional model
+- Implements SCD Type 2 for all dimensions
+- Surrogate keys via identity columns
+- Optimized for analytics/reporting
 
 **Tables:**
-- `dim_customers` - Customer dimension with SCD Type 2
-- `dim_products` - Product dimension
-- `dim_stores` - Store dimension
-- `fact_sales` - Sales fact table
+- `dim_customers` - Customer dimension (SCD2)
+- `dim_products` - Product dimension (SCD2)
+- `dim_stores` - Store dimension (SCD2)
+- `fact_sales` - Sales fact table (references SKs)
 
 ## 🔄 ETL Process Flow
 
-### Step 1: File Archival (01_archival)
-```python
-# Archives old customer files from raw/ to archive/ folder
-# Keeps only the latest file in raw/ folder
-```
+### 1. File Archival (`01_archival`)
+- Archive old files from raw/ to archive/
+- Keep only latest in raw/
 
-### Step 2: Bronze Load (02_bronze_load)
-```sql
-# Loads CSV files from S3 using read_files()
-# Creates Delta tables in bronze schema
-```
+### 2. Bronze Load (`02_bronze_load`)
+- Load CSVs from S3 using read_files()
+- Create Delta tables in bronze
 
-### Step 3: Silver Transformation (03_silver_transform)
-**Transformations Applied:**
-- **Customers:** Trim spaces, standardize names (INITCAP), lowercase emails, parse dates
-- **Products:** Remove products with price = 0
-- **Stores:** Remove stores without regions
-- **Sales:** Remove transactions with quantity <= 0
+### 3. Silver Transformation (`03_silver_transform`)
+- Trim, standardize, deduplicate, validate types
+- Remove invalid products, stores, sales
 
-### Step 4: Gold Load (04_gold_load)
-**Dimensional Model:**
-- Creates dimension tables with surrogate keys
-- Implements identity columns for auto-incrementing keys
+### 4. Gold Load (`04_gold_load`)
+- Create dimension/fact tables with SCD2 structure (StartDate, EndDate, IsCurrent='Y'/'N')
+- One-time initial load
 
-### Step 5: SCD Type 2 Implementation (05_scd2_merge)
-**Customer Dimension Change Tracking:**
-- Tracks historical changes in customer attributes
-- Fields tracked: `CustomerName`, `City`, `Address`
-- Uses `IsCurrent` flag (Y/N)
-- Maintains `StartDate` and `EndDate` for each record
+### 5. SCD2 Merge (`05_scd2_merge`)
+- Incremental change tracking for all dimensions
+- If attributes change → close old record (`IsCurrent='N'`, set EndDate), insert new version (`IsCurrent='Y'`)
+- New entity → insert (`IsCurrent='Y'`)
+- Fact table loads new transactions referencing latest SKs
 
-**Logic:**
-- If customer data changes → Close old record, insert new record
-- If customer is new → Insert with IsCurrent = 'Y'
+### 6. Validation (`06_validation`)
+- Data quality checks (nulls, duplicates, invalid prices/quantities, referential integrity)
 
-### Step 6: Validation (06_validation)
-**Quality Checks:**
-- ✅ Check for NULL customer IDs
-- ✅ Check for duplicate customers
-- ✅ Identify products with invalid prices
-- ✅ Identify stores with missing regions
-- ✅ Identify sales with invalid quantities
-
-### Step 7: Logging (07_logging)
-- Process execution tracking
-- Success/failure logging by layer
+### 7. Logging (`07_logging`)
+- Process tracking and success/failure logging
 
 ## 📊 Data Sources
 
 **S3 Bucket:** `s3://capgemini-retail-etl-shiva/`
 
-**Folders:**
-- `raw/` - Latest source files
-- `sftp/` - SFTP landing zone
-- `archive/customers/` - Archived customer files
+- `raw/` - Latest files
+- `archive/<entity>/` - Older files archived by entity
+- `sftp/` - Legacy location
 
-**File Naming Convention:**
+**File Naming:**
 - `customers_src_DDMMYYYYHHMMSS.csv`
 - `products_src_DDMMYYYYHHMMSS.csv`
 - `stores_src_DDMMYYYYHHMMSS.csv`
@@ -136,85 +117,61 @@ Retail_ETL_Project/
 ## 🚀 How to Run
 
 ### Prerequisites
-- Databricks workspace with Unity Catalog enabled
-- S3 access configured
-- Catalog: `capgeminipro`
+- Databricks workspace (Unity Catalog enabled)
+- AWS S3 access
+- Catalog: capgeminipro
+- Cluster/serverless compute
 
 ### Execution Order
+1. **01_archival** — archive files
+2. **02_bronze_load** — load to bronze
+3. **03_silver_transform** — cleanse
+4. **04_gold_load** _(run ONCE)_ — initial dimension/fact creation
+5. **05_scd2_merge** _(recurring)_ — incremental SCD2 loads
+6. **06_validation** — quality checks
+7. **07_logging** — runtime tracking
 
-1. **Archive old files**
-   ```
-   Run: 01_archival
-   ```
+## 😎 Key Features
 
-2. **Load Bronze Layer**
-   ```
-   Run: 02_bronze_load
-   ```
+- **Medallion Architecture** — scalable, modular
+- **Delta Lake** — ACID, time-travel
+- **SCD Type 2** — historical tracking for dimensions
+- **Surrogate Keys** — all dimensions use identity columns
+- **Referential Integrity** — validated in silver/gold
+- **Data Quality Checks** — bad data flagged
+- **Process Logging** — end-to-end transparency
+- **AWS + Databricks + Unity Catalog** — robust, governed
 
-3. **Transform to Silver Layer**
-   ```
-   Run: 03_silver_transform
-   ```
+## 🛠️ Technologies
 
-4. **Create Gold Layer**
-   ```
-   Run: 04_gold_load
-   ```
-
-5. **Apply SCD Type 2**
-   ```
-   Run: 05_scd2_merge
-   ```
-
-6. **Validate Data Quality**
-   ```
-   Run: 06_validation
-   ```
-
-7. **Log Process**
-   ```
-   Run: 07_logging
-   ```
-
-## 🔍 Key Features
-
-✅ **Medallion Architecture** - Bronze → Silver → Gold layers  
-✅ **Delta Lake Format** - ACID transactions, time travel  
-✅ **Data Quality Checks** - Validation and rejection of bad data  
-✅ **SCD Type 2** - Historical change tracking for customers  
-✅ **File Archival** - Automated cleanup of processed files  
-✅ **Unity Catalog** - Centralized data governance  
-
-## 🛠️ Technologies Used
-
-- **Databricks** - Unified analytics platform
-- **Delta Lake** - Storage layer with ACID properties
-- **Unity Catalog** - Data governance
-- **Apache Spark SQL** - Data processing
-- **Python** - Scripting and automation
-- **AWS S3** - Cloud storage
+- Databricks (SQL, Python)
+- Delta Lake
+- Unity Catalog
+- Apache Spark
+- AWS S3
 
 ## 📝 Data Schemas
 
 ### Bronze Schema
-- All columns loaded as strings from CSV
-- No data type enforcement
+- All columns loaded as strings
 
 ### Silver Schema
-**Customers:** CustomerID (INT), CustomerName (STRING), Email (STRING), City (STRING), Address (STRING), LastUpdated (DATE)
-
-**Products:** ProductID (INT), ProductName (STRING), Category (STRING), UnitPrice (DECIMAL)
-
-**Stores:** StoreID (INT), StoreName (STRING), Region (STRING)
-
-**Sales:** TransactionID (INT), StoreID (INT), ProductID (INT), CustomerID (INT), Quantity (INT), TransactionDate (DATE)
+- **Customers:** CustomerID, CustomerName, Email, City, Address, LastUpdated (DATE)
+- **Products:** ProductID, ProductName, Category, UnitPrice (DECIMAL)
+- **Stores:** StoreID, StoreName, Region
+- **Sales:** TransactionID, StoreID, ProductID, CustomerID, Quantity, TransactionDate (DATE)
 
 ### Gold Schema
-**dim_customers:** CustomerSK (BIGINT), CustomerID (INT), CustomerName, Email, City, Address, StartDate, EndDate, IsCurrent
+- **dim_customers:** CustomerSK, CustomerID, CustomerName, Email, City, Address, StartDate, EndDate, IsCurrent
+- **dim_products:** ProductSK, ProductID, ProductName, Category, UnitPrice, StartDate, EndDate, IsCurrent
+- **dim_stores:** StoreSK, StoreID, StoreName, Region, StartDate, EndDate, IsCurrent
+- **fact_sales:** SalesSK, TransactionID, CustomerSK, ProductSK, StoreSK, Quantity, TxnDate
 
-**dim_products:** ProductSK (BIGINT), ProductID (INT), ProductName, Category, UnitPrice
+## 🎯 Success Criteria
+- Pipeline runs autonomously on Databricks
+- Incremental loads are tracked in SCD2 dimensions (history preserved)
+- Fact table references all valid surrogate keys
+- Data is clean, validated, and ready for BI/reporting
+- All steps are logged and validated for reliability
 
-**dim_stores:** StoreSK (BIGINT), StoreID (INT), StoreName, Region
-
-**fact_sales:** SalesSK (BIGINT), TransactionID, StoreID, ProductID, CustomerID, Quantity, TransactionDate
+---
