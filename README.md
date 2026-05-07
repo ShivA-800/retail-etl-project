@@ -22,7 +22,6 @@ Retail_ETL_Project/
 ├── 04_gold_load         # Create dimensional model in Gold layer (one-time)
 ├── 05_scd2_merge        # Incremental SCD2 updates for all dimensions
 ├── 06_validation        # Data quality validation checks
-├── 07_logging           # Process logging and monitoring
 ```
 
 ## 🏗️ Architecture
@@ -97,8 +96,6 @@ Retail_ETL_Project/
 ### 6. Validation (`06_validation`)
 - Data quality checks (nulls, duplicates, invalid prices/quantities, referential integrity)
 
-### 7. Logging (`07_logging`)
-- Process tracking and success/failure logging
 
 ## 📊 Data Sources
 
